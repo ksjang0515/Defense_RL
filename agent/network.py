@@ -5,22 +5,22 @@ import jax.numpy as jnp
 
 
 class Embedder(nn.Module):
-    embed_dim: int
+    embed_size: int
 
     @nn.compact
     def __call__(self, inputs):
         """Embeds using one Dense layer and ReLU.
 
         Args:
-            inputs: [batch, length, attr]
+            inputs: [batch, *, attr]
 
         Returns:
-            tensor of [batch, length, embed_dim]
+            tensor of [batch, *, embed_size]
         """
         x = inputs
         dtype = x.dtype
 
-        x = nn.Dense(features=self.embed_dim, dtype=dtype)
+        x = nn.Dense(features=self.embed_size, dtype=dtype)
         x = nn.relu(x)
 
         return x
@@ -30,7 +30,7 @@ class Transformer(nn.Module):
     attention_layer: int
     attention_head: int
 
-    embed_dim: int
+    embed_size: int
     use_token: bool = True
 
     @nn.compact
@@ -38,15 +38,15 @@ class Transformer(nn.Module):
         """Applies Self-Attention mechanism.
 
         Args:
-            inputs: [batch, length, embed_dim]
+            inputs: [batch, length, embed_size]
 
         Returns:
             if use_token
-                cls token of size [batch, embed_dim]
-                encoding of size [batch, length, embed_dim]
+                cls token of size [batch, embed_size]
+                encoding of size [batch, length, embed_size]
 
             else
-                encoding of size [batch, length, embed_dim]
+                encoding of size [batch, length, embed_size]
 
         """
         x = inputs
@@ -55,7 +55,7 @@ class Transformer(nn.Module):
         if self.use_token:
             b, _, _ = x.shape
 
-            cls = self.param("cls", nn.initializers.zeros, (1, 1, self.embed_dim))
+            cls = self.param("cls", nn.initializers.zeros, (1, 1, self.embed_size))
             cls = jnp.tile(cls, [b, 1, 1])
             x = jnp.concatenate([cls, x], axis=1)
 
@@ -80,21 +80,23 @@ def encoding_to_map(encoding, coordinate, map_size):
     """Maps encoding to corresponding index on the map. Empty spaces are represented as zeros.
 
     Args:
-        inputs: [batch, length, embed_dim]
+        inputs: [batch, length, embed_size]
         coordinate: [batch, length, 2], where last dimension is (x, y) or (height, width)
         map_size: (height, width)
 
     Returns:
-        tensor of [batch, map_height, map_width, embed_dim]
+        tensor of [batch, map_height, map_width, embed_size]
 
     """
 
     map_width, map_height = map_size
-    batch_size, _, embed_dim = encoding.shape
+    batch_size, _, embed_size = encoding.shape
     dtype = encoding.dtype
 
     # place encoding to corresponding coordinate
-    spacial_map = jnp.zeros((batch_size, map_height, map_width, embed_dim), dtype=dtype)
+    spacial_map = jnp.zeros(
+        (batch_size, map_height, map_width, embed_size), dtype=dtype
+    )
 
     coordinate_x = coordinate[:, :, 0]
     coordinate_y = coordinate[:, :, 1]
