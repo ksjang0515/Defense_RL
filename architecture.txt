@@ -1,0 +1,264 @@
+Reinforcement Learning
+
+to keeep things simple, we will use Actor Critic with Vanilla Policy Gradient and TD learning
+
+also instead of using Fictitious Self-Play as described on AlphaStar paper, we will only keep one Atacker and Defender for simplicity
+
+however both agent will be saved by some interval to save progress.
+
+Note. most of the tensors mentioned here are 1d tensors(vector). tensors corresponding to map data are 2d tensors(matrix).
+
+*** Key Takeaway ***
+one important thing to lookout for in deep learning is intention behind the architecture design and understanding the inductive bias is crucial(for more information i suggest asking ChatGPT)
+
+in AlphaStar the entity is encoded using Transformer. This is because entity can vary in size and entity itself does not have enough information(e.g. entity's role).
+
+maps are passed to CNN as it is commonly used in image processing and pattern recognition.
+
+however CNN with kernel size 1 does something else. it is used to set the channel dimmension prior to processing and finding the pattern between channels. (keep in mind that CNN's weight is different in each channel, 2d CNN with kernel size w*h have weights of channel*w*h)
+
+another useful thing is temperature. dividing the logit with temperature acts like exponentiating and makes probability more sharp.
+
+********************
+
+*** WARNING ***
+transformer architecture in definition can vary in length. however since we pass fixed length tensor to the network, length should be fixed.
+
+one way to fix this is to have a fixed size tensor with length capable of containing data. then we mask empty spaces so that it is ignored.
+
+***************
+
+*** WARNING ***
+in following architecture there are multiple heads and sampling. since it is not possible to pass gradient through sampling process we need to find a way
+
+there are methods such as Reparameterization Trick to pass gradient through sampling but i don't think they took this approach in AlphaStar (there was no mention of it)
+
+what i propose is instead of only calculating gradient at the last head, we can calculate from every head that uses sampling
+
+the problem is that i don't know this will be okay to do so. it seems like it would be fine in REINFORCE algorithm but some head will have more gradient flowing than the other.
+
+so one would need to double check just in case. contact professor majoring reinforcement learning just in case.
+
+***************
+
+=================================================================================
+Tower Attributes
+
+tower_type
+onehot_health
+percent_health
+fire_countdown
+
+x_position
+y_position
+
+was_selected
+
+=================================================================================
+Entity Attributes
+
+unit_type
+onehot_health
+percent_health
+attack_countdown
+
+x_position
+y_position
+
+was_selected
+
+=================================================================================
+Defender Builder
+
+Network Inputs:
+    1. Tower
+        List of Tower with attributes as 1d tensor
+    2. Game Info
+        2-1. Amount of money left(both attacker and defender)
+        2-3. Attacker Unit Distribution
+
+Spacial Encoder:
+    Inputs: tower_list
+    Outputs: embedded_spacial
+
+tower_list is run through transformer, then placed on the corresponding position and run 2d convolution to create map_encoding
+
+---------------------------------------------------------------------------------
+Scalar Encoder:
+    Inputs: game_info
+    Outputs: embedded_scalar
+
+encode amt of money left
+
+---------------------------------------------------------------------------------
+Building Selector:
+    Inputs: embedded_spacial, embedded_scalar
+    Outputs:
+        new_building_logit, new_building, autoregressive_embedding
+
+concatenate embedded_spacial, embedded_scalar to single vector
+
+feed that to LSTM then it's output to MLP to get logit for new_building
+
+pass LSTM's output to MLP then ReLU to get autoregressive_embedding
+
+---------------------------------------------------------------------------------
+Building Position Selector
+    Inputs: map_skip, autoregressive_embedding
+    Outputs:
+        building_position_logit, building_position
+
+reshape autoregressive_embedding as width, height as map_skip then concatenate on channel dimention (if autoregressive_embedding size is too small, enlarge using MLP)
+
+run cnn then decnn to get position logit then sample
+
+=================================================================================
+Attacker Unit Generator
+
+Network Inputs:
+    1. Tower
+        List of Tower with attributes as 1d tensor
+    2. Game Info
+        2-1. Amount of money left(both attacker and defender)
+        
+Spacial Encoder:
+    Inputs: tower_list
+    Outputs: embedded_spacial
+
+tower_list is run through transformer, then placed on the corresponding position and run 2d convolution to create map_encoding
+
+---------------------------------------------------------------------------------
+Scalar Encoder:
+    Inputs: game_info
+    Outputs: embedded_scalar
+
+encode amt of money left
+
+---------------------------------------------------------------------------------
+Unit Selector:
+    Inputs: embedded_spacial, embedded_scalar
+    Outputs:
+        entity_distribution
+
+concatenate embedded_spacial, embedded_scalar to single vector and feed that to MLP then softmax to get entity_distribution
+
+=================================================================================
+Attacker Unit Controller
+
+Network Inputs:
+    1. Tower
+        List of Tower with attributes as 1d tensor
+    2. Entity
+        List of entity with attributes as 1d tensor
+    3. Game Info
+        3-1. Amount of money left
+        3-2. Remaining Time
+
+---------------------------------------------------------------------------------
+Tower Encoder:
+    Inputs: tower_list
+    Outputs:
+        embedded_tower - 1d tensor of embedded tower
+        tower_embedding - 1d tensor embedding of each tower
+
+tower_list is run through transformer, here starting token is not used
+
+---------------------------------------------------------------------------------
+Entity Encoder:
+    Inputs: entity_list
+    Outputs:
+        entity_embedding
+
+entity_list is run through transformer, here starting token is not used
+
+---------------------------------------------------------------------------------
+Spacial Encoder:
+    Inputs: tower_embedding, entity_embedding
+    Outputs: embedded_spacial, map_skip
+
+use entity_embedding, tower_embedding to form scattered_map representing the position of each entity
+
+concatenate all maps by channel dimension and run 2d convolution to create map_encoding
+
+intermediate result of CNN is used as map_skip
+
+---------------------------------------------------------------------------------
+Scalar Encoder:
+    Inputs: game_info
+    Outputs: embedded_scalar
+
+encode amt of money left and remaining time
+
+---------------------------------------------------------------------------------
+Core:
+    Inputs: prev_state, eembedded_spacial, embedded_scalar
+    Outputs:
+        next_state
+        lstm_output
+
+concatenate embedded_spacial, embedded_scalar to single vector and feed that to LSTM
+
+---------------------------------------------------------------------------------
+Action Selector:
+    Inputs: lstm_output
+    Outputs: 
+        action_type_logits
+        action_type
+        autoregressive_embedding
+
+run lstm_output through MLP to get logits(softmax) to select move or attack action
+
+one-hot encode action_type and run it through MLP and relu
+
+concatenate that with lstm_output and run MLP again to get autoregressive_embedding
+
+---------------------------------------------------------------------------------
+Selected Units Head:
+    Inputs: autoregressive_embedding, action_type, entity_embedding
+    Outputs: 
+        units_logits
+        units
+        autoregressive_embedding
+
+follow pointer networks architecture, but details are from AlphaStar
+
+entity_embedding is run through CNN to create key, learnable variable corresponding to [EOS] token (end of selection token) is created.
+
+one-hot encoding of selectable entity is passed to MLP and ReLU to get func_embed
+
+a loop is run until it reaches maximum selection
+    pass autoregressive_embedding to MLP and ReLU and add to func_embed
+
+    func_embed passed to MLP to reduce size and fed into LSTM to get query
+
+    query is multiplied to key and then softmax with temperature to get sampling probability
+
+    after sampling, the key of selected entity is normalized by subtracting the mean and fed to MLP, then added to autoregressive_embedding
+
+---------------------------------------------------------------------------------
+Target Tower Head:
+    Inputs: autoregressive_embedding, tower_embedding
+    Outputs:
+        target_tower_logits
+        target_tower
+similar to Selected Units Head use tower_embedding to create key, but no token is required.
+
+one-hot encode of selectable tower is passed to MLP and ReLU to get func_embed
+
+autoregressive_embedding to MLP and ReLU and add to func_embed. then func_embed is passed to MLP to get query
+
+query is multiplied with key to get target_tower_logits and target_tower
+
+this is one end of Attacker Unit Controller.
+
+---------------------------------------------------------------------------------
+Location Head:
+    Inputs: autoregressive_embedding, map_skip
+    Outputs:
+        target_location_logits
+        target_location
+autoregressive_embedding is reshaped to have the same shape as map_skip and concatenate in channel dimension.
+
+passed to 2d CNN with kernel size 1, then upsampled to get target_location_logits and target_location.
+
+=================================================================================
